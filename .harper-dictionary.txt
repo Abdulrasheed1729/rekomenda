@@ -1,5 +1,10 @@
+ALS
+Args
 CSC
+CSCMatrix
 CSR
+CSRMatrix
+RMSE
 idx
 indptr
 num
