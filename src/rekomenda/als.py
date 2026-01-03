@@ -3,6 +3,7 @@ from typing import List
 
 import matplotlib.pyplot as plt
 import numpy as np
+from numba import jit, prange
 
 from .csc import CSCMatrix
 from .csr import CSRMatrix
@@ -75,9 +76,10 @@ class BiasOnlyALS:
                     f"Iteration {iteration + 1}/{n_iterations} - RMSE: {rmse:.4f}, NLL: {nll:.4f}"
                 )
 
+    @jit(parallel=True, fastmath=True)
     def _update_user_biases(self, csr_matrix: CSRMatrix):
         """Update user biases using closed-form solution"""
-        for u in range(csr_matrix.num_users):
+        for u in prange(csr_matrix.num_users):
             start, end = csr_matrix.indptr[u], csr_matrix.indptr[u + 1]
             if start == end:
                 continue
@@ -92,9 +94,10 @@ class BiasOnlyALS:
             n_ratings = end - start
             self.user_bias[u] = np.sum(residuals) / (n_ratings + self.lambda_reg)
 
+    @jit(parallel=True, fastmath=True)
     def _update_item_biases(self, csc_matrix: CSCMatrix):
         """Update item biases using closed-form solution"""
-        for i in range(csc_matrix.num_items):
+        for i in prange(csc_matrix.num_items):
             start, end = csc_matrix.indptr[i], csc_matrix.indptr[i + 1]
             if start == end:
                 continue

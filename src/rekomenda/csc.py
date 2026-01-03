@@ -1,11 +1,13 @@
 from dataclasses import dataclass
 
 import numpy as np
+from numba.experimental import jitclass
 
 from .coo import COOMatrix
 
 
 @dataclass
+@jitclass
 class CSCMatrix:
     """Compressed Sparse Column matrix for efficient column operations"""
 
