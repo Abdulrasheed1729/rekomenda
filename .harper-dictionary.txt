@@ -4,6 +4,8 @@ CSC
 CSCMatrix
 CSR
 CSRMatrix
+Numba
+ProcessPoolExecutor
 RMSE
 idx
 indptr

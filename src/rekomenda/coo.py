@@ -1,11 +1,9 @@
 from dataclasses import dataclass
 
 import numpy as np
-from numba.experimental import jitclass
 
 
 @dataclass
-@jitclass
 class COOMatrix:
     user_indices: np.ndarray  # row indices
     user_ids: np.ndarray

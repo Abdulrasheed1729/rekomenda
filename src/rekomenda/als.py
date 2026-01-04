@@ -3,10 +3,13 @@ from typing import List
 
 import matplotlib.pyplot as plt
 import numpy as np
-from numba import jit, prange
 
 from .csc import CSCMatrix
 from .csr import CSRMatrix
+from .utils import (
+    predict_batch,
+    update_user_factors_parallel,
+)
 
 
 @dataclass
@@ -76,10 +79,9 @@ class BiasOnlyALS:
                     f"Iteration {iteration + 1}/{n_iterations} - RMSE: {rmse:.4f}, NLL: {nll:.4f}"
                 )
 
-    @jit(parallel=True, fastmath=True)
     def _update_user_biases(self, csr_matrix: CSRMatrix):
         """Update user biases using closed-form solution"""
-        for u in prange(csr_matrix.num_users):
+        for u in range(csr_matrix.num_users):
             start, end = csr_matrix.indptr[u], csr_matrix.indptr[u + 1]
             if start == end:
                 continue
@@ -94,10 +96,9 @@ class BiasOnlyALS:
             n_ratings = end - start
             self.user_bias[u] = np.sum(residuals) / (n_ratings + self.lambda_reg)
 
-    @jit(parallel=True, fastmath=True)
     def _update_item_biases(self, csc_matrix: CSCMatrix):
         """Update item biases using closed-form solution"""
-        for i in prange(csc_matrix.num_items):
+        for i in range(csc_matrix.num_items):
             start, end = csc_matrix.indptr[i], csc_matrix.indptr[i + 1]
             if start == end:
                 continue
@@ -173,6 +174,7 @@ class BiasOnlyALS:
         ax2.grid(True, alpha=0.3)
 
         plt.tight_layout()
+        plt.savefig()
         plt.show()
 
 
@@ -380,3 +382,160 @@ class LatentFactorALS:
 
         plt.tight_layout()
         plt.show()
+
+
+class OptimizedLatentFactorALS:
+    """
+    Highly optimized ALS implementation for large-scale datasets
+
+    Features:
+    - Numba acceleration for bias updates
+    - Optional parallel processing for factor updates
+    - Batch prediction
+    - float32 for memory efficiency
+    - Progress tracking with less frequent metric computation
+    """
+
+    def __init__(
+        self,
+        n_factors: int = 10,
+        lambda_reg: float = 0.1,
+        n_workers: int = 1,
+        use_parallel: bool = False,
+        dtype=np.float32,
+    ):
+        self.n_factors = n_factors
+        self.lambda_reg = lambda_reg
+        self.n_workers = n_workers
+        self.use_parallel = use_parallel
+        self.dtype = dtype
+
+        self.global_mean = 0.0
+        self.user_bias: np.ndarray = np.array([])
+        self.item_bias: np.ndarray = np.array([])
+        self.user_factors: np.ndarray = np.array([])
+        self.item_factors: np.ndarray = np.array([])
+        self._user_indices_cache = None
+
+    def fit(
+        self,
+        csr_matrix,
+        csc_matrix,
+        n_iterations: int = 10,
+        verbose: bool = True,
+        compute_metrics_every: int = 1,  # Compute metrics every N iterations
+    ):
+        """
+        Fit the model with optimizations
+
+        Args:
+            compute_metrics_every: Compute expensive metrics every N iterations
+                                  (set to 5-10 for huge datasets)
+        """
+        # Initialize
+        self.global_mean = np.mean(csr_matrix.ratings).astype(self.dtype)
+        self.user_bias = np.zeros(csr_matrix.num_users, dtype=self.dtype)
+        self.item_bias = np.zeros(csr_matrix.num_items, dtype=self.dtype)
+
+        self.user_factors = np.random.normal(
+            0, 0.1, (csr_matrix.num_users, self.n_factors)
+        ).astype(self.dtype)
+        self.item_factors = np.random.normal(
+            0, 0.1, (csr_matrix.num_items, self.n_factors)
+        ).astype(self.dtype)
+
+        # Cache user indices
+        self._user_indices_cache = np.repeat(
+            np.arange(csr_matrix.num_users), np.diff(csr_matrix.indptr)
+        )
+
+        for iteration in range(n_iterations):
+            # Update user factors
+            if self.use_parallel:
+                update_user_factors_parallel(
+                    csr_matrix,
+                    self.item_factors,
+                    self.item_bias,
+                    self.global_mean,
+                    self.lambda_reg,
+                    self.n_factors,
+                    self.user_bias,
+                    self.user_factors,
+                    self.n_workers,
+                )
+            else:
+                self._update_user_factors(csr_matrix)
+
+            # Update item factors
+            self._update_item_factors(csc_matrix)
+
+            # Compute metrics only every N iterations
+            if (
+                iteration + 1
+            ) % compute_metrics_every == 0 or iteration == n_iterations - 1:
+                rmse = self._compute_rmse_batch(csr_matrix)
+                if verbose:
+                    print(
+                        f"Iteration {iteration + 1}/{n_iterations} - RMSE: {rmse:.4f}"
+                    )
+
+    def _update_user_factors(self, csr_matrix):
+        """Standard user factor update"""
+        for u in range(csr_matrix.num_users):
+            start, end = csr_matrix.indptr[u], csr_matrix.indptr[u + 1]
+            if start == end:
+                continue
+
+            item_indices = csr_matrix.item_indices[start:end]
+            ratings = csr_matrix.ratings[start:end]
+            n_ratings = end - start
+
+            Q_u = self.item_factors[item_indices]
+            Q_u_aug = np.column_stack([np.ones(n_ratings, dtype=self.dtype), Q_u])
+            residuals = ratings - self.global_mean - self.item_bias[item_indices]
+
+            A = Q_u_aug.T @ Q_u_aug
+            A += self.lambda_reg * np.eye(self.n_factors + 1, dtype=self.dtype)
+            b = Q_u_aug.T @ residuals
+
+            x = np.linalg.solve(A, b)
+            self.user_bias[u] = x[0]
+            self.user_factors[u] = x[1:]
+
+    def _update_item_factors(self, csc_matrix):
+        """Standard item factor update"""
+        for i in range(csc_matrix.num_items):
+            start, end = csc_matrix.indptr[i], csc_matrix.indptr[i + 1]
+            if start == end:
+                continue
+
+            user_indices = csc_matrix.user_indices[start:end]
+            ratings = csc_matrix.ratings[start:end]
+            n_ratings = end - start
+
+            P_i = self.user_factors[user_indices]
+            P_i_aug = np.column_stack([np.ones(n_ratings, dtype=self.dtype), P_i])
+            residuals = ratings - self.global_mean - self.user_bias[user_indices]
+
+            A = P_i_aug.T @ P_i_aug
+            A += self.lambda_reg * np.eye(self.n_factors + 1, dtype=self.dtype)
+            b = P_i_aug.T @ residuals
+
+            x = np.linalg.solve(A, b)
+            self.item_bias[i] = x[0]
+            self.item_factors[i] = x[1:]
+
+    def _compute_rmse_batch(self, csr_matrix, batch_size=1000000):
+        """Compute RMSE using batch processing"""
+        predictions = predict_batch(
+            self._user_indices_cache,
+            csr_matrix.item_indices,
+            self.global_mean,
+            self.user_bias,
+            self.item_bias,
+            self.user_factors,
+            self.item_factors,
+            batch_size,
+        )
+        mse = np.mean((csr_matrix.ratings - predictions) ** 2)
+        return float(np.sqrt(mse))
