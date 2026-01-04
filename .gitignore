@@ -10,5 +10,6 @@ wheels/
 .venv
 .ipynb_checkpoints/
 ml-32m/
+ml-1m/
 ml-latest-small/
 .ruff_cache/

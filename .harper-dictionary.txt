@@ -4,6 +4,7 @@ CSC
 CSCMatrix
 CSR
 CSRMatrix
+NLL
 Numba
 ProcessPoolExecutor
 RMSE

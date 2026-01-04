@@ -1,13 +1,13 @@
-ZIP_FILE_PATH="ml-32m.zip"
-ML_SMALL="ml-10k.zip"
+ZIP_FILE_PATH="ml-32m"
+ML_SMALL="ml-1m"
 
-# Download ml-10k if not present
+# Download ml-1m if not present
 if [ ! -f "$ML_SMALL" ]; then
-  echo "Downloading ml-10k dataset..."
-  wget https://files.grouplens.org/datasets/movielens/ml-latest-small.zip -O ml-10k.zip
-  unzip ml-10k.zip
+  echo "Downloading ml-1m dataset..."
+  wget https://files.grouplens.org/datasets/movielens/ml-1m.zip -O ml-1m.zip
+  unzip ml-1m.zip
 else
-  echo "ml-10k.zip already exists."
+  echo "ml-1m.zip already exists."
 fi
 
 # Download ml-32m if not present
