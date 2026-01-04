@@ -117,6 +117,20 @@ These systems are particularly effective for entertainment products, such as mov
 Furthermore, recommender systems serve a critical function in marketplaces by addressing the power-law distribution of sales, ensuring that suitable, less popular "tail items" are exposed to users, thereby increasing user engagement.
 
 Over the years many stragies have been employed and they can all be categorised into two main broad categories:
+\begin{itemize}
+	\item \textbf{Content Filtering}: This approach characterizes users and products by creating explicit profiles based on attributes, such as movie genre, actors, or user demographics.
+ The profiles allow programs to associate users with matching products.
+ A known successful realization of this strategy is the Music Genome Project utilized by Pandora.com \cite{castelluccio2006music}, where trained music analysts score each song based on hundreds of distinct musical characteristics, or "genes," relevant to understanding listeners’ preferences. However, content-based strategies require external information that might not be available or easy to collect. Content filtering is superior when dealing with the cold start problem for new products and users.
+	\item \textbf{Collaborative Filtering}: This alternative relies solely on past user behavior, such as previous transactions or product ratings, without requiring the creation of explicit profiles.
+	CF analyzes relationships between users and interdependencies among products to identify new user-item associations.
+	This approach is domain free and often achieves greater accuracy than content-based techniques, though it suffers from the cold start problem for new users and items.
+The term "collaborative filtering" was coined by the developers of Tapestry\cite{goldberg1992using}, the first recommender system.
+
+	      Within collaborative filtering, techniques are primarily grouped into \emph{neighborhood methods} and \emph{latent factor} models. Latent factor models explain ratings by characterizing both items and users on 20 to 100 factors inferred from the rating patterns, acting as a computerized alternative to human-created characteristics like song genres. The resulting interaction between a user and an item captures the user’s overall interest in the item’s characteristics.
+
+	      The matrix factorisation technique which is approach in collaborative filtering, map both users and items to a \emph{joint latent space}.
+	      This approach rose to prominence due to its demonstrable superiority in predictive accuracy over classic nearest-neighbor techniques. The Netflix Prize competition, which released a training set of over 100 million ratings, dramatically spurred research in this area and highlighted the potential of MF models\cite{koren2009matrix}. Furthermore, MF techniques are attractive because they offer a compact, memory-efficient model, good scalability, and significant flexibility for modeling complex aspects of real-life data.
+\end{itemize}
 
 
 \section{Electronic Submission}
@@ -608,7 +622,7 @@ support.
 
 % In the unusual situation where you want a paper to appear in the
 % references without citing it in the main text, use \nocite
-\nocite{langley00}
+% \nocite{langley00}
 
 \bibliography{example_paper}
 \bibliographystyle{icml2023}
