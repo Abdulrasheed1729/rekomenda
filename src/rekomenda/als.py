@@ -153,7 +153,7 @@ class BiasOnlyALS:
 
         return data_term + reg_term
 
-    def plot_metrics(self):
+    def plot_metrics(self, output):
         """Plot RMSE and Negative Log Likelihood over iterations"""
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
 
@@ -174,7 +174,7 @@ class BiasOnlyALS:
         ax2.grid(True, alpha=0.3)
 
         plt.tight_layout()
-        plt.savefig()
+        plt.savefig(output, format="pdf")
         plt.show()
 
 

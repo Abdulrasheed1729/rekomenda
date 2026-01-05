@@ -152,14 +152,14 @@ def predict_batch(
 
 
 def load_data(
-    filepath, split_ratio: Optional[int] = None
+    filepath, split_ratio: Optional[int] = None, csv_delimiter: str = ","
 ) -> Union[Tuple[COOMatrix, COOMatrix], COOMatrix]:
     users = list()
     movies = list()
     ratings = list()
 
     with open(filepath, "r") as f:
-        reader = csv.reader(f)
+        reader = csv.reader(f, delimiter=csv_delimiter)
         next(reader)
         for row in reader:
             users.append(row[0])
