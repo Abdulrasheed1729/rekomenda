@@ -8,6 +8,7 @@ NLL
 Numba
 ProcessPoolExecutor
 RMSE
+float32
 idx
 indptr
 num

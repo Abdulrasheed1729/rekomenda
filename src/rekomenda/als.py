@@ -21,19 +21,24 @@ class ALSMetrics:
     neg_log_likelihood: List[float] = field(default_factory=list)
 
 
-class BiasOnlyALS:
+class ALSModel:
+    pass
+
+
+class BiasOnlyALS(ALSModel):
     """
     Bias-only Alternating Least Squares
     Model: r_ui = μ + b_u + b_i
     """
 
-    def __init__(self, lambda_reg: float = 0.1):
+    def __init__(self, lambda_reg: float = 0.1, gamma_reg=0.01):
         """
         Args:
             lambda_reg: L2 regularization parameter
         """
         self.lambda_reg = lambda_reg
-        self.global_mean = 0.0
+        # self.global_mean = 0.0
+        self.gamma_reg = gamma_reg
         self.user_bias = np.array([])
         self.item_bias = np.array([])
         self.metrics = ALSMetrics()
@@ -90,11 +95,15 @@ class BiasOnlyALS:
             ratings = csr_matrix.ratings[start:end]
 
             # Residuals: r_ui - μ - b_i
-            residuals = ratings - self.global_mean - self.item_bias[item_indices]
+            residuals = ratings - self.item_bias[item_indices]
 
             # Closed-form solution: b_u = (Σ residuals) / (n_u + λ)
             n_ratings = end - start
-            self.user_bias[u] = np.sum(residuals) / (n_ratings + self.lambda_reg)
+            self.user_bias[u] = (
+                self.lambda_reg
+                * np.sum(residuals)
+                / (self.lambda_reg * n_ratings + self.gamma_reg)
+            )
 
     def _update_item_biases(self, csc_matrix: CSCMatrix):
         """Update item biases using closed-form solution"""
@@ -107,19 +116,19 @@ class BiasOnlyALS:
             ratings = csc_matrix.ratings[start:end]
 
             # Residuals: r_ui - μ - b_u
-            residuals = ratings - self.global_mean - self.user_bias[user_indices]
+            residuals = ratings - self.user_bias[user_indices]
 
             # Closed-form solution: b_i = (Σ residuals) / (n_i + λ)
             n_ratings = end - start
-            self.item_bias[i] = np.sum(residuals) / (n_ratings + self.lambda_reg)
+            self.item_bias[i] = (
+                self.lambda_reg
+                * np.sum(residuals)
+                / (self.lambda_reg * n_ratings + self.gamma_reg)
+            )
 
     def predict(self, user_indices: np.ndarray, item_indices: np.ndarray) -> np.ndarray:
         """Predict ratings for user-item pairs"""
-        return (
-            self.global_mean
-            + self.user_bias[user_indices]
-            + self.item_bias[item_indices]
-        )
+        return self.user_bias[user_indices] + self.item_bias[item_indices]
 
     def _compute_rmse(self, csr_matrix: CSRMatrix) -> float:
         """Compute Root Mean Square Error"""
@@ -142,7 +151,9 @@ class BiasOnlyALS:
         predictions = self.predict(user_indices, csr_matrix.item_indices)
 
         # Data likelihood: -0.5 * Σ(r - r̂)²
-        data_term = 0.5 * np.sum((csr_matrix.ratings - predictions) ** 2)
+        data_term = (
+            0.5 * self.lambda_reg * np.sum((csr_matrix.ratings - predictions) ** 2)
+        )
 
         # Regularization: 0.5 * λ * (||b_u||² + ||b_i||²)
         reg_term = (
@@ -184,7 +195,13 @@ class LatentFactorALS:
     Model: r_ui = μ + b_u + b_i + p_u^T q_i
     """
 
-    def __init__(self, n_factors: int = 10, lambda_reg: float = 0.1):
+    def __init__(
+        self,
+        n_factors: int = 10,
+        lambda_reg: float = 0.1,
+        gamma_reg: float = 0.01,
+        tau_reg: float = 0.1,
+    ):
         """
         Arguments:
             n_factors: Number of latent factors
@@ -192,7 +209,9 @@ class LatentFactorALS:
         """
         self.n_factors = n_factors
         self.lambda_reg = lambda_reg
-        self.global_mean = 0.0
+        self.gamma_reg = gamma_reg
+        self.tau_reg = tau_reg
+        # self.global_mean = 0.0
         self.user_bias = np.array([])
         self.item_bias = np.array([])
         self.user_factors = np.array([])  # P matrix (num_users x n_factors)
@@ -216,7 +235,7 @@ class LatentFactorALS:
             verbose: Print progress
         """
         # Initialize
-        self.global_mean = np.mean(csr_matrix.ratings)
+        # self.global_mean = np.mean(csr_matrix.ratings)
         self.user_bias = np.zeros(csr_matrix.num_users)
         self.item_bias = np.zeros(csr_matrix.num_items)
 
@@ -266,7 +285,7 @@ class LatentFactorALS:
             Q_u_aug = np.column_stack([np.ones(n_ratings), Q_u])
 
             # Residuals: r_ui - μ - b_i
-            residuals = ratings - self.global_mean - self.item_bias[item_indices]
+            residuals = ratings - self.item_bias[item_indices]
 
             # Solve: (Q_u^T Q_u + λI) x = Q_u^T residuals
             # where x = [b_u, p_u]
@@ -296,7 +315,7 @@ class LatentFactorALS:
             P_i_aug = np.column_stack([np.ones(n_ratings), P_i])
 
             # Residuals: r_ui - μ - b_u
-            residuals = ratings - self.global_mean - self.user_bias[user_indices]
+            residuals = ratings - self.user_bias[user_indices]
 
             # Solve: (P_i^T P_i + λI) x = P_i^T residuals
             # where x = [b_i, q_i]
@@ -311,11 +330,7 @@ class LatentFactorALS:
     def predict(self, user_indices: np.ndarray, item_indices: np.ndarray) -> np.ndarray:
         """Predict ratings for user-item pairs"""
         # Base prediction: μ + b_u + b_i
-        predictions = (
-            self.global_mean
-            + self.user_bias[user_indices]
-            + self.item_bias[item_indices]
-        )
+        predictions = self.user_bias[user_indices] + self.item_bias[item_indices]
 
         # Add latent factor interaction: p_u^T q_i
         for idx, (u, i) in enumerate(zip(user_indices, item_indices)):
@@ -344,12 +359,14 @@ class LatentFactorALS:
         predictions = self.predict(user_indices, csr_matrix.item_indices)
 
         # Data likelihood: -0.5 * Σ(r - r̂)²
-        data_term = 0.5 * np.sum((csr_matrix.ratings - predictions) ** 2)
+        data_term = (
+            0.5 * self.lambda_reg * np.sum((csr_matrix.ratings - predictions) ** 2)
+        )
 
         # Regularization: 0.5 * λ * (||b_u||² + ||b_i||² + ||P||² + ||Q||²)
         reg_term = (
             0.5
-            * self.lambda_reg
+            * self.tau_reg
             * (
                 np.sum(self.user_bias**2)
                 + np.sum(self.item_bias**2)
@@ -360,7 +377,7 @@ class LatentFactorALS:
 
         return data_term + reg_term
 
-    def plot_metrics(self):
+    def plot_metrics(self, output):
         """Plot RMSE and Negative Log Likelihood over iterations"""
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
 
@@ -381,6 +398,7 @@ class LatentFactorALS:
         ax2.grid(True, alpha=0.3)
 
         plt.tight_layout()
+        plt.savefig(output, format="pdf")
         plt.show()
 
 
@@ -416,6 +434,7 @@ class OptimizedLatentFactorALS:
         self.user_factors: np.ndarray = np.array([])
         self.item_factors: np.ndarray = np.array([])
         self._user_indices_cache = None
+        self.metrics = ALSMetrics()
 
     def fit(
         self,
@@ -430,7 +449,7 @@ class OptimizedLatentFactorALS:
 
         Args:
             compute_metrics_every: Compute expensive metrics every N iterations
-                                  (set to 5-10 for huge datasets)
+                                (set to 5-10 for huge datasets)
         """
         # Initialize
         self.global_mean = np.mean(csr_matrix.ratings).astype(self.dtype)
@@ -474,9 +493,15 @@ class OptimizedLatentFactorALS:
                 iteration + 1
             ) % compute_metrics_every == 0 or iteration == n_iterations - 1:
                 rmse = self._compute_rmse_batch(csr_matrix)
+                nll = self._compute_nll_batch(csr_matrix)
+
+                self.metrics.iterations.append(iteration + 1)
+                self.metrics.rmse.append(rmse)
+                self.metrics.neg_log_likelihood.append(nll)
+
                 if verbose:
                     print(
-                        f"Iteration {iteration + 1}/{n_iterations} - RMSE: {rmse:.4f}"
+                        f"Iteration {iteration + 1}/{n_iterations} - RMSE: {rmse:.4f}, NLL: {nll:.4f}"
                     )
 
     def _update_user_factors(self, csr_matrix):
@@ -539,3 +564,87 @@ class OptimizedLatentFactorALS:
         )
         mse = np.mean((csr_matrix.ratings - predictions) ** 2)
         return float(np.sqrt(mse))
+
+    def _compute_nll_batch(self, csr_matrix, batch_size=1000000):
+        """Compute Negative Log Likelihood using batch processing"""
+        predictions = predict_batch(
+            self._user_indices_cache,
+            csr_matrix.item_indices,
+            self.global_mean,
+            self.user_bias,
+            self.item_bias,
+            self.user_factors,
+            self.item_factors,
+            batch_size,
+        )
+
+        # Data likelihood: -0.5 * Σ(r - r̂)²
+        data_term = 0.5 * np.sum((csr_matrix.ratings - predictions) ** 2)
+
+        # Regularization: 0.5 * λ * (||b_u||² + ||b_i||² + ||P||² + ||Q||²)
+        reg_term = (
+            0.5
+            * self.lambda_reg
+            * (
+                np.sum(self.user_bias**2)
+                + np.sum(self.item_bias**2)
+                + np.sum(self.user_factors**2)
+                + np.sum(self.item_factors**2)
+            )
+        )
+
+        return float(data_term + reg_term)
+
+    def predict(
+        self,
+        user_indices: np.ndarray,
+        item_indices: np.ndarray,
+        batch_size: int = 100000,
+    ) -> np.ndarray:
+        """
+        Predict ratings for user-item pairs using batch processing
+
+        Args:
+            user_indices: Array of user indices
+            item_indices: Array of item indices
+            batch_size: Size of batches for processing (prevents memory issues)
+
+        Returns:
+            Array of predicted ratings
+        """
+        return predict_batch(
+            user_indices,
+            item_indices,
+            self.global_mean,
+            self.user_bias,
+            self.item_bias,
+            self.user_factors,
+            self.item_factors,
+            batch_size,
+        )
+
+    def plot_metrics(self, output):
+        """Plot RMSE and Negative Log Likelihood over iterations"""
+        import matplotlib.pyplot as plt
+
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+
+        # Plot RMSE
+        ax1.plot(self.metrics.iterations, self.metrics.rmse, "b-o", linewidth=2)
+        ax1.set_xlabel("Iteration", fontsize=12)
+        ax1.set_ylabel("RMSE", fontsize=12)
+        ax1.set_title("Root Mean Square Error", fontsize=14)
+        ax1.grid(True, alpha=0.3)
+
+        # Plot NLL
+        ax2.plot(
+            self.metrics.iterations, self.metrics.neg_log_likelihood, "r-o", linewidth=2
+        )
+        ax2.set_xlabel("Iteration", fontsize=12)
+        ax2.set_ylabel("Negative Log Likelihood", fontsize=12)
+        ax2.set_title("Negative Log Likelihood", fontsize=14)
+        ax2.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        plt.savefig(output, format="pdf")
+        plt.show()
