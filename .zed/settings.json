@@ -4,4 +4,6 @@
       "soft_wrap": "editor_width",
     },
   },
+  "vim_mode": true,
+  "vim": { "toggle_relative_line_numbers": true },
 }
