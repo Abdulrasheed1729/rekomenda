@@ -1,9 +1,12 @@
 ALS
 Args
+BiasOnlyALS
 CSC
 CSCMatrix
 CSR
 CSRMatrix
+LatentFactorALS
+MovieLens
 NLL
 Numba
 ProcessPoolExecutor
@@ -12,3 +15,5 @@ float32
 idx
 indptr
 num
+numpy
+reproducibility

@@ -7,6 +7,8 @@ import numpy as np
 from numba import njit, prange
 
 from .coo import COOMatrix
+from .csc import CSCMatrix
+from .csr import CSRMatrix
 
 # ==============================================================================
 # 1. NUMBA-ACCELERATED UPDATE FUNCTIONS
@@ -187,3 +189,242 @@ def load_data(
         coo_mat = COOMatrix.from_raw_data(users, movies, ratings)
 
     return coo_mat
+
+
+def load_csv(filepath: str, delimiter: str = ",", skip_header: bool = True):
+    """
+    Load CSV file as numpy array
+
+    Args:
+        filepath: Path to CSV file
+        delimiter: Column delimiter
+        skip_header: Skip first row
+
+    Returns:
+        data: numpy array of data
+        header: list of column names (if skip_header=True)
+    """
+    with open(filepath, "r") as f:
+        lines = f.readlines()
+
+    header = None
+    start_idx = 0
+
+    if skip_header:
+        header = lines[0].strip().split(delimiter)
+        start_idx = 1
+
+    data = []
+    for line in lines[start_idx:]:
+        row = line.strip().split(delimiter)
+        data.append(row)
+
+    return data, header
+
+
+def load_csv_chunked(
+    filepath: str,
+    delimiter: str = ",",
+    skip_header: bool = True,
+    chunk_size: int = 1000000,
+):
+    """
+    Generator that yields chunks of CSV data
+    Memory efficient for large files
+
+    Args:
+        filepath: Path to CSV file
+        delimiter: Column delimiter
+        skip_header: Skip first row
+        chunk_size: Number of rows per chunk
+
+    Yields:
+        chunk: numpy array of chunk_size rows
+    """
+    with open(filepath, "r") as f:
+        if skip_header:
+            header = f.readline().strip().split(delimiter)
+        else:
+            header = None
+
+        chunk = []
+        for line in f:
+            row = line.strip().split(delimiter)
+            chunk.append(row)
+
+            if len(chunk) >= chunk_size:
+                yield np.array(chunk), header
+                chunk = []
+
+        # Yield remaining rows
+        if chunk:
+            yield np.array(chunk), header
+
+
+def load_movielens_data(
+    ratings_path: str,
+    movies_path: str,
+    test_size: float = 0.2,
+    random_seed: int = 42,
+    chunk_size: int = 1000000,
+):
+    """
+    Load MovieLens dataset using chunked processing (memory efficient)
+
+    Args:
+        ratings_path: Path to ratings.csv (userId, movieId, rating, timestamp)
+        movies_path: Path to movies.csv (movieId, title, genres)
+        test_size: Fraction of data for testing
+        random_seed: Random seed for reproducibility
+        chunk_size: Process ratings in chunks of this size
+
+    Returns:
+        train_csr: CSR matrix for training
+        train_csc: CSC matrix for training
+        test_data: (test_users, test_items, test_ratings) as arrays
+        item_id_to_name: dict mapping item indices to movie names
+        movie_id_to_idx: dict mapping original movie IDs to matrix indices
+    """
+
+    print("Loading MovieLens data with chunked processing...")
+
+    # Step 1: Load movies (small file, can load all at once)
+    print("Loading movie metadata...")
+    movies_data, _ = load_csv(movies_path)
+    movie_ids_movies = np.array([int(x[0]) for x in movies_data])
+    movie_titles = [x[1] for x in movies_data]
+
+    movie_id_to_title = dict(zip(movie_ids_movies, movie_titles))
+    print(f"Loaded {len(movie_id_to_title)} movies")
+    del movies_data  # Free memory
+
+    # Step 2: First pass - collect unique users and items, count total ratings
+    print("\nFirst pass: Collecting unique users and items...")
+    unique_users = set()
+    unique_items = set()
+    total_ratings = 0
+
+    for chunk, header in load_csv_chunked(ratings_path, chunk_size=chunk_size):
+        users_chunk = chunk[:, 0].astype(int)
+        items_chunk = chunk[:, 1].astype(int)
+
+        unique_users.update(users_chunk)
+        unique_items.update(items_chunk)
+        total_ratings += len(chunk)
+
+        if total_ratings % 5000000 == 0:
+            print(f"  Processed {total_ratings:,} ratings...")
+
+    print(f"Found {len(unique_users):,} unique users")
+    print(f"Found {len(unique_items):,} unique items")
+    print(f"Total ratings: {total_ratings:,}")
+
+    # Step 3: Create mappings
+    print("\nCreating ID mappings...")
+    user_id_to_idx = {user_id: idx for idx, user_id in enumerate(sorted(unique_users))}
+    movie_id_to_idx = {
+        movie_id: idx for idx, movie_id in enumerate(sorted(unique_items))
+    }
+    idx_to_movie_id = {idx: movie_id for movie_id, idx in movie_id_to_idx.items()}
+
+    item_id_to_name = {
+        idx: movie_id_to_title.get(movie_id, f"Movie {movie_id}")
+        for idx, movie_id in idx_to_movie_id.items()
+    }
+
+    del unique_users, unique_items  # Free memory
+
+    # Step 4: Second pass - load ratings, map IDs, and split
+    print("\nSecond pass: Loading ratings and creating train/test split...")
+    np.random.seed(random_seed)
+
+    train_users_list = []
+    train_items_list = []
+    train_ratings_list = []
+    test_users_list = []
+    test_items_list = []
+    test_ratings_list = []
+
+    processed = 0
+    for chunk, header in load_csv_chunked(ratings_path, chunk_size=chunk_size):
+        users_chunk = chunk[:, 0].astype(int)
+        items_chunk = chunk[:, 1].astype(int)
+        ratings_chunk = chunk[:, 2].astype(np.float32)
+
+        # Map to matrix indices
+        user_indices = np.array([user_id_to_idx[uid] for uid in users_chunk])
+        item_indices = np.array([movie_id_to_idx[mid] for mid in items_chunk])
+
+        # Random train/test split for this chunk
+        n_chunk = len(chunk)
+        is_test = np.random.random(n_chunk) < test_size
+
+        # Split into train and test
+        train_mask = ~is_test
+        train_users_list.append(user_indices[train_mask])
+        train_items_list.append(item_indices[train_mask])
+        train_ratings_list.append(ratings_chunk[train_mask])
+
+        test_users_list.append(user_indices[is_test])
+        test_items_list.append(item_indices[is_test])
+        test_ratings_list.append(ratings_chunk[is_test])
+
+        processed += len(chunk)
+        if processed % 5000000 == 0:
+            print(f"  Processed {processed:,} ratings...")
+
+    # Step 5: Concatenate all chunks
+    print("\nConcatenating chunks...")
+    train_users = np.concatenate(train_users_list)
+    train_items = np.concatenate(train_items_list)
+    train_ratings = np.concatenate(train_ratings_list)
+
+    test_users = np.concatenate(test_users_list)
+    test_items = np.concatenate(test_items_list)
+    test_ratings = np.concatenate(test_ratings_list)
+
+    # Free memory
+    del train_users_list, train_items_list, train_ratings_list
+    del test_users_list, test_items_list, test_ratings_list
+
+    print(
+        f"Train: {len(train_ratings):,} ratings ({len(train_ratings) / total_ratings * 100:.1f}%)"
+    )
+    print(
+        f"Test: {len(test_ratings):,} ratings ({len(test_ratings) / total_ratings * 100:.1f}%)"
+    )
+
+    # Step 6: Create sparse matrices for training data
+    print("\nCreating training sparse matrices...")
+    train_csr = CSRMatrix.from_raw_data(train_users, train_items, train_ratings)
+    train_csc = CSCMatrix.from_raw_data(train_users, train_items, train_ratings)
+
+    print(f"Matrix: {train_csr.num_users} users × {train_csr.num_items} items")
+    print(
+        f"Sparsity: {len(train_ratings) / (train_csr.num_users * train_csr.num_items) * 100:.3f}%"
+    )
+
+    # Free training arrays (now in sparse matrices)
+    del train_users, train_items, train_ratings
+
+    # Keep test data as arrays (small)
+    test_data = (test_users, test_items, test_ratings)
+
+    print("\n✓ Data loaded successfully with chunked processing")
+    print(
+        f"✓ Memory efficient: Processed {total_ratings:,} ratings in chunks of {chunk_size:,}"
+    )
+
+    return train_csr, train_csc, test_data, item_id_to_name, movie_id_to_idx
+
+
+def find_movie_by_title(search_term: str, item_id_to_name: dict, top_n=5):
+    """Search for movies by title"""
+    matches = []
+    search_lower = search_term.lower()
+
+    for item_id, name in item_id_to_name.items():
+        if search_lower in name.lower():
+            matches.append((item_id, name))
+
+    return matches[:top_n]
