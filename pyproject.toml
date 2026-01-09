@@ -12,6 +12,8 @@ dependencies = [
     "matplotlib>=3.10.8",
     "numpy<2.4.0",
     "numba>=0.63.1",
+    "pandas>=2.3.3",
+    "scipy>=1.15.3",
 ]
 
 [build-system]
