@@ -428,3 +428,43 @@ def find_movie_by_title(search_term: str, item_id_to_name: dict, top_n=5):
             matches.append((item_id, name))
 
     return matches[:top_n]
+
+
+def compute_pca(embeddings: np.ndarray, n_components: int = 2):
+    """
+    Compute PCA using eigendecomposition
+
+    Args:
+        embeddings: (n_samples, n_features) matrix
+        n_components: Number of principal components
+
+    Returns:
+        coords_2d: (n_samples, n_components) projected coordinates
+        explained_variance_ratio: Fraction of variance explained by each component
+    """
+    # Center the data
+    mean = np.mean(embeddings, axis=0)
+    centered = embeddings - mean
+
+    # Compute covariance matrix
+    cov_matrix = np.cov(centered.T)
+
+    # Compute eigenvalues and eigenvectors
+    eigenvalues, eigenvectors = np.linalg.eigh(cov_matrix)
+
+    # Sort by eigenvalues (descending)
+    idx = eigenvalues.argsort()[::-1]
+    eigenvalues = eigenvalues[idx]
+    eigenvectors = eigenvectors[:, idx]
+
+    # Select top n_components
+    top_eigenvectors = eigenvectors[:, :n_components]
+
+    # Project data
+    coords = centered @ top_eigenvectors
+
+    # Compute explained variance ratio
+    total_variance = np.sum(eigenvalues)
+    explained_variance_ratio = eigenvalues[:n_components] / total_variance
+
+    return coords, explained_variance_ratio

@@ -5,12 +5,16 @@ CSC
 CSCMatrix
 CSR
 CSRMatrix
+DataFrame
 LatentFactorALS
 MovieLens
 NLL
 Numba
+PCA
 ProcessPoolExecutor
 RMSE
+coords
+eigendecomposition
 float32
 idx
 indptr
