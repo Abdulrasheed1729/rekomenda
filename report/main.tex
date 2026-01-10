@@ -60,7 +60,7 @@
 \begin{document}
 
 \twocolumn[
-	\icmltitle{Recommender System}
+	\icmltitle{An Efficient and Memory-Safe Implementation of the Alternating Least Square Recommender System Algorithm}
 
 	% It is OKAY to include author information, even for blind
 	% submissions: the style file will automatically remove it for you
@@ -87,7 +87,7 @@
 	% You may provide any keywords that you
 	% find helpful for describing your paper; these are used to populate
 	% the "keywords" metadata in the PDF but will not be shown in the document
-	\icmlkeywords{Machine Learning, ICML}
+	\icmlkeywords{Collaborative Filtering, Matrix Factorization, Alternating Least Squares, Memory Efficiency, Recommender Systems, Large-Scale Machine Learning}
 
 	\vskip 0.3in
 ]
@@ -196,9 +196,9 @@ As an example if we consider following table:
 		\hline
 		Charlie          & Titanic           & 4.5             \\
 		\hline
-		Alice            & Mr Bean          & 3.0             \\
+		Alice            & Mr Bean           & 3.0             \\
 		\hline
-		Caleb            & Titanic          & 3.5             \\
+		Caleb            & Titanic           & 3.5             \\
 		\hline
 	\end{tabular}
 	\caption{Example Movie Ratings Data}
@@ -207,18 +207,41 @@ As an example if we consider following table:
 In the above table there are 4 users and 3 movies. Represent table \ref{tab:01} as a matrix we have the following sparse matrix:
 
 \begin{table}[H]
-\centering
-\label{tab:02}
-\begin{tabular}{cccc}
- & Titanic & Avatar & Mr. Bean \\
- Alice & 5.0 & 3.0 & 3.0 \\
- Bob & - & 4.0 & - \\
- Charlie & 4.5 & - & - \\
- Caleb & 3.5 & - & - \\
-\end{tabular}
+	\centering
+	\label{tab:02}
+	\begin{tabular}{cccc}
+		        & Titanic & Avatar & Mr. Bean \\
+		Alice   & 5.0     & 3.0    & 3.0      \\
+		Bob     & -       & 4.0    & -        \\
+		Charlie & 4.5     & -      & -        \\
+		Caleb   & 3.5     & -      & -        \\
+	\end{tabular}
 \end{table}
 
 From the above matrix it obvious that only 6 entries out of 12 is useful for analysis. In a very large dataset with say $n$ number of users and $m$ numbers of items, the dimension of the sparse matrix is $n \times m$, which will result in a space complexity of $nm$. But this can substantially reduced by storing only the non-zero values.
+
+\subsubsection{The Compressed Sparse Row (CSR)}
+
+This is a sparse matrix represented by the following parameters:
+
+\begin{itemize}
+	\item The number of rows in the matrix.
+
+	\item The number of columns in the matrix.
+
+	\item The number of non-zero elements (nnz) in the matrix.
+
+	\item The pointers to the row offsets array of length number of rows + 1 that represents the starting position of each row in the columns and values arrays.
+
+	\item The pointers to the column indices array of length nnz that contains the column indices of the corresponding elements in the values array.
+
+	\item The pointers to the values array of length nnz that holds all nonzero values of the matrix in row-major ordering.
+\end{itemize}
+
+\begin{figure}[H]
+	\centerline{\includegraphics[width=\linewidth]{pics/csr.png}}
+	\caption{A visual representation of the CSR format \cite{NVIDIAsparse}:w}
+\end{figure}
 
 \subsubsection{The Coordinate Format (COO)}
 
@@ -246,6 +269,189 @@ This is a sparse matrix represented by the following parameters:
 	\centerline{\includegraphics[width=\linewidth]{pics/coo.png}}
 	\caption{A visual representation of the COO format \cite{NVIDIAsparse}:w}
 \end{figure}
+
+\subsubsection{The Compresses Sparse Column (CSC)}
+
+This is a sparse matrix represented by the following parameters:
+
+\begin{itemize}
+	\item The number of rows in the matrix.
+
+	\item The number of columns in the matrix.
+
+	\item The number of non-zero elements (nnz) in the matrix.
+
+	\item The pointers to the column offsets array of length number of column + 1 that represents the starting position of each column in the columns and values arrays.
+
+	\item The pointers to the row indices array of length nnz that contains row indices of the corresponding elements in the values array.
+
+    \item The pointers to the values array of length nnz that holds all nonzero values of the matrix in column-major ordering.
+\end{itemize}
+
+\begin{figure}[H]
+	\centerline{\includegraphics[width=\linewidth]{pics/csc.png}}
+	\caption{A visual representation of the CSC format \cite{NVIDIAsparse}:w}
+\end{figure}
+
+In order to be efficient in the implementation of our, the different sparse matrix representations was used in a complementary manner. The CSR representation was used
+
+\subsection{Data Ingestion and Preprocessing}
+
+Given the size of the dataset, chunking technique was employed to make the ingestion of data memory-efficient, and we used a two pass streaming approach to achieve this:
+
+\begin{enumerate}
+\item \textbf{First Pass}: iteratively processes the ratings file in chunk to collect the set of unique user and item identifiers and to count the total number of ratings. This enables mapping original IDs to contiguous integer indices without loading the entire dataset into memory.
+
+\item \textbf{Second Pass}: reprocesses the ratings file in chunks to map original IDs to contiguous indices and performs a randomized train/test split. The split uses a per-chunk random sampling controlled by a \texttt{random\_seed} for reproducibility.
+
+% \item \textbf{Output}: training data is returned as sparse matrices in both CSR and CSC formats; test data is retained as dense arrays of (user\_index, item\_index, rating). The function also returns mappings from internal item indices to movie titles.
+\end{enumerate}
+
+\begin{algorithm}[t]
+\caption{Two-Pass Chunked Sparse Matrix Construction}
+\label{alg:sparse_matrix_construction}
+\begin{algorithmic}[1]
+\REQUIRE Ratings file path $\mathcal{F}$, chunk size $c$
+\ENSURE Sparse matrices $\mathbf{M}_{\text{CSR}}$, $\mathbf{M}_{\text{CSC}}$, test arrays $\mathcal{T}$
+
+\STATE \textbf{Pass 1: Collect Unique Identifiers}
+\STATE Initialize: $\mathcal{U}_{\text{users}} \leftarrow \emptyset$, $\mathcal{U}_{\text{items}} \leftarrow \emptyset$
+\FOR{each chunk $\mathcal{C}$ of $c$ rows from $\mathcal{F}$}
+    \STATE Parse $\{\text{user\_id}_i\}$, $\{\text{item\_id}_i\}$ from $\mathcal{C}$
+    \STATE $\mathcal{U}_{\text{users}} \leftarrow \mathcal{U}_{\text{users}} \cup \{\text{user\_id}_i\}$
+    \STATE $\mathcal{U}_{\text{items}} \leftarrow \mathcal{U}_{\text{items}} \cup \{\text{item\_id}_i\}$
+    \STATE Discard $\mathcal{C}$
+\ENDFOR
+\STATE Create mappings: $\phi_u: \text{user\_id} \mapsto \text{idx}$, $\phi_v: \text{item\_id} \mapsto \text{idx}$
+
+\STATE
+\STATE \textbf{Pass 2: Load and Split}
+\STATE Initialize: $\mathcal{L}_{\text{train}} \leftarrow []$, $\mathcal{L}_{\text{test}} \leftarrow []$
+\FOR{each chunk $\mathcal{C}$ of $c$ rows from $\mathcal{F}$}
+    \STATE Parse $\{\text{user\_id}_i\}$, $\{\text{item\_id}_i\}$, $\{r_i\}$ from $\mathcal{C}$
+    \STATE Map IDs to indices using $\phi_u$, $\phi_v$
+    \STATE Randomly split into train/test with ratio $0.8/0.2$
+    \STATE Append train samples to $\mathcal{L}_{\text{train}}$
+    \STATE Append test samples to $\mathcal{L}_{\text{test}}$
+    \STATE Discard $\mathcal{C}$
+\ENDFOR
+
+\STATE Concatenate $\mathcal{L}_{\text{train}} \rightarrow \mathcal{A}_{\text{train}}$, $\mathcal{L}_{\text{test}} \rightarrow \mathcal{T}$
+\STATE Convert $\mathcal{A}_{\text{train}} \rightarrow \mathbf{M}_{\text{CSR}}$, $\mathbf{M}_{\text{CSC}}$
+\RETURN $\mathbf{M}_{\text{CSR}}$, $\mathbf{M}_{\text{CSC}}$, $\mathcal{T}$
+\end{algorithmic}
+\end{algorithm}
+
+In addition, even though Python is a garbage-collected language, we need to employed the \texttt{malloc - free} memory management model from the \texttt{C} programming language \cite{kernighan1988c}, this because we notice our program crashout after two chunking process.
+We delete any unused data object from the memory using the \texttt{del} keyword in Python.
+
+
+\section{Model Formulation}
+
+
+\begin{algorithm}[t]
+\caption{Bias-Only Alternating Least Squares}
+\label{alg:bias-only-als}
+\begin{algorithmic}[1]
+\REQUIRE Rating matrix $R \in \mathbb{R}^{m \times n}$ with observed entries $\Omega$, regularization $\lambda$, iterations $T$
+\ENSURE User biases $\{b_u\}_{u=1}^m$, item biases $\{b_i\}_{i=1}^n$
+
+\STATE \textbf{Initialize:}
+\STATE $\mu \leftarrow \frac{1}{|\Omega|} \sum_{(u,i) \in \Omega} r_{ui}$
+\STATE $b_u \leftarrow 0$ for all $u \in [m]$
+\STATE $b_i \leftarrow 0$ for all $i \in [n]$
+
+\FOR{$t = 1$ to $T$}
+    \STATE \textit{// Update user biases (fix item biases)}
+    \FOR{$u = 1$ to $m$}
+        \IF{$|\mathcal{I}_u| > 0$}
+            \STATE $b_u \leftarrow \frac{\sum_{i \in \mathcal{I}_u} (r_{ui} - \mu - b_i)}{|\mathcal{I}_u| + \lambda}$
+        \ENDIF
+    \ENDFOR
+
+    \STATE \textit{// Update item biases (fix user biases)}
+    \FOR{$i = 1$ to $n$}
+        \IF{$|\mathcal{U}_i| > 0$}
+            \STATE $b_i \leftarrow \frac{\sum_{u \in \mathcal{U}_i} (r_{ui} - \mu - b_u)}{|\mathcal{U}_i| + \lambda}$
+        \ENDIF
+    \ENDFOR
+\ENDFOR
+
+\RETURN $\{b_u\}_{u=1}^m$, $\{b_i\}_{i=1}^n$
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[t]
+\caption{Latent Factor ALS with Biases}
+\label{alg:latent-factor-als}
+\begin{algorithmic}[1]
+\REQUIRE Rating matrix $R$, latent factors $k$, regularization $\lambda$, iterations $T$
+\ENSURE User biases $\{b_u\}$, item biases $\{b_i\}$, user factors $P \in \mathbb{R}^{m \times k}$, item factors $Q \in \mathbb{R}^{n \times k}$
+
+\STATE \textbf{Initialize:}
+\STATE $\mu \leftarrow \frac{1}{|\Omega|} \sum_{(u,i) \in \Omega} r_{ui}$
+\STATE $b_u \leftarrow 0$ for all $u \in [m]$; \quad $b_i \leftarrow 0$ for all $i \in [n]$
+\STATE $P \sim \mathcal{N}(0, 0.1^2 I_{m \times k})$; \quad $Q \sim \mathcal{N}(0, 0.1^2 I_{n \times k})$
+
+\FOR{$t = 1$ to $T$}
+    \STATE \textit{// Update user parameters (fix $Q$ and $\{b_i\}$)}
+    \FOR{$u = 1$ to $m$}
+        \IF{$|\mathcal{I}_u| > 0$}
+            \STATE $Q_u \leftarrow [\mathbf{q}_i]_{i \in \mathcal{I}_u} \in \mathbb{R}^{|\mathcal{I}_u| \times k}$ \COMMENT{Stack item factors}
+            \STATE $\tilde{Q}_u \leftarrow [\mathbf{1}_{|\mathcal{I}_u|}, Q_u] \in \mathbb{R}^{|\mathcal{I}_u| \times (k+1)}$ \COMMENT{Augment with bias column}
+            \STATE $\mathbf{y}_u \leftarrow [r_{ui} - \mu - b_i]_{i \in \mathcal{I}_u} \in \mathbb{R}^{|\mathcal{I}_u|}$ \COMMENT{Residuals}
+            \STATE $A \leftarrow \tilde{Q}_u^\top \tilde{Q}_u + \lambda I_{k+1}$
+            \STATE $\mathbf{b} \leftarrow \tilde{Q}_u^\top \mathbf{y}_u$
+            \STATE $\mathbf{x}_u \leftarrow A^{-1} \mathbf{b}$ \COMMENT{Solve ridge regression}
+            \STATE $b_u \leftarrow x_{u,0}$; \quad $\mathbf{p}_u \leftarrow [x_{u,1}, \ldots, x_{u,k}]^\top$
+        \ENDIF
+    \ENDFOR
+
+    \STATE \textit{// Update item parameters (fix $P$ and $\{b_u\}$)}
+    \FOR{$i = 1$ to $n$}
+        \IF{$|\mathcal{U}_i| > 0$}
+            \STATE $P_i \leftarrow [\mathbf{p}_u]_{u \in \mathcal{U}_i} \in \mathbb{R}^{|\mathcal{U}_i| \times k}$
+            \STATE $\tilde{P}_i \leftarrow [\mathbf{1}_{|\mathcal{U}_i|}, P_i] \in \mathbb{R}^{|\mathcal{U}_i| \times (k+1)}$
+            \STATE $\mathbf{y}_i \leftarrow [r_{ui} - \mu - b_u]_{u \in \mathcal{U}_i} \in \mathbb{R}^{|\mathcal{U}_i|}$
+            \STATE $A \leftarrow \tilde{P}_i^\top \tilde{P}_i + \lambda I_{k+1}$
+            \STATE $\mathbf{b} \leftarrow \tilde{P}_i^\top \mathbf{y}_i$
+            \STATE $\mathbf{x}_i \leftarrow A^{-1} \mathbf{b}$
+            \STATE $b_i \leftarrow x_{i,0}$; \quad $\mathbf{q}_i \leftarrow [x_{i,1}, \ldots, x_{i,k}]^\top$
+        \ENDIF
+    \ENDFOR
+\ENDFOR
+
+\RETURN $\{b_u\}_{u=1}^m$, $\{b_i\}_{i=1}^n$, $P$, $Q$
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[t]
+\caption{Cold Start Recommendation for New User}
+\label{alg:cold-start}
+\begin{algorithmic}[1]
+\REQUIRE New user ratings $\mathcal{R} = \{(i_j, r_j)\}_{j=1}^{|\mathcal{R}|}$, model parameters $(\mu, Q, \{b_i\}, \lambda)$, top-$K$
+\ENSURE Top-$K$ item recommendations
+
+\STATE $\mathcal{I} \leftarrow \{i_j : (i_j, r_j) \in \mathcal{R}\}$ \COMMENT{Extract rated item indices}
+\STATE $Q_{\text{new}} \leftarrow [\mathbf{q}_{i_j}]_{i_j \in \mathcal{I}} \in \mathbb{R}^{|\mathcal{R}| \times k}$
+\STATE $\tilde{Q}_{\text{new}} \leftarrow [\mathbf{1}_{|\mathcal{R}|}, Q_{\text{new}}]$
+\STATE $\mathbf{y}_{\text{new}} \leftarrow [r_j - \mu - b_{i_j}]_{j=1}^{|\mathcal{R}|}$
+
+\STATE \textit{// Compute user parameters via ridge regression}
+\STATE $A \leftarrow \tilde{Q}_{\text{new}}^\top \tilde{Q}_{\text{new}} + \lambda I_{k+1}$
+\STATE $\mathbf{b} \leftarrow \tilde{Q}_{\text{new}}^\top \mathbf{y}_{\text{new}}$
+\STATE $\mathbf{x}_{\text{new}} \leftarrow A^{-1} \mathbf{b}$
+\STATE $b_{\text{new}} \leftarrow x_0$; \quad $\mathbf{p}_{\text{new}} \leftarrow [x_1, \ldots, x_k]^\top$
+
+\STATE \textit{// Predict ratings for all items}
+\STATE $\mathbf{s} \leftarrow \mu \mathbf{1}_n + b_{\text{new}} \mathbf{1}_n + [b_i]_{i=1}^n + Q \mathbf{p}_{\text{new}}$ \COMMENT{$\mathbf{s} \in \mathbb{R}^n$}
+\STATE $\mathbf{s}[\mathcal{I}] \leftarrow -\infty$ \COMMENT{Exclude already rated items}
+
+\STATE $\mathcal{T} \leftarrow \text{argsort}(\mathbf{s}, \text{descending})$ \COMMENT{Sort by predicted rating}
+\RETURN $\mathcal{T}[1:K]$, $\mathbf{s}[\mathcal{T}[1:K]]$
+\end{algorithmic}
+\end{algorithm}
+
 
 
 

@@ -468,3 +468,20 @@ def compute_pca(embeddings: np.ndarray, n_components: int = 2):
     explained_variance_ratio = eigenvalues[:n_components] / total_variance
 
     return coords, explained_variance_ratio
+
+
+def evaluate_model(model, test_users, test_items, test_ratings):
+    """Evaluate model on test set"""
+    print("\nEvaluating on test set...")
+    predictions = model.predict(test_users, test_items)
+
+    # RMSE
+    rmse = np.sqrt(np.mean((test_ratings - predictions) ** 2))
+
+    # MAE
+    mae = np.mean(np.abs(test_ratings - predictions))
+
+    print(f"Test RMSE: {rmse:.4f}")
+    print(f"Test MAE: {mae:.4f}")
+
+    return {"rmse": rmse, "mae": mae}
