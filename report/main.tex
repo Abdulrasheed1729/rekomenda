@@ -104,9 +104,13 @@
 \printAffiliationsAndNotice{\icmlEqualContribution} % otherwise use the standard text.
 
 \begin{abstract}
-	This document provides a basic paper template and submission guidelines.
-	Abstracts must be a single paragraph, ideally between 4--6 sentences long.
-	Gross violations will trigger corrections at the camera-ready phase.
+Alternating Least Squares (ALS) remains a widely used optimization method for matrix factorization–based recommender systems, yet practical deployments are often constrained by memory usage and data ingestion bottlenecks on large, sparse datasets.
+This paper presents an efficient and memory-safe implementation of ALS that combines sparse matrix representations, chunked two-pass data loading, and low-level memory management techniques to enable scalable training on datasets that exceed main memory capacity.
+Using the MovieLens 100K and 32M benchmarks, we demonstrate how complementary use of CSR and CSC formats, float32 precision, and vectorized computations substantially reduce memory footprint while preserving predictive performance.
+We evaluate both bias-only and bias-latent ALS variants, showing stable convergence and competitive RMSE at scale.
+The proposed implementation provides a practical alternative to heavyweight distributed frameworks, making large-scale collaborative filtering accessible on modest hardware.
+
+The source code for this system can be found at \url{https://https://github.com/Abdulrasheed1729/rekomenda}
 \end{abstract}
 
 \section{Introduction}
@@ -132,7 +136,7 @@ Over the years many stragies have been employed and they can all be categorised 
 	      This approach rose to prominence due to its demonstrable superiority in predictive accuracy over classic nearest-neighbor techniques. The Netflix Prize competition, which released a training set of over 100 million ratings, dramatically spurred research in this area and highlighted the potential of MF models\cite{koren2009matrix}. Furthermore, MF techniques are attractive because they offer a compact, memory-efficient model, good scalability, and significant flexibility for modeling complex aspects of real-life data.
 \end{itemize}
 
-\section{Literature Review}
+\section{Related Work}
 
 The evolution of recommender systems has been characterized by a paradigm shift from heuristic neighborhood-based methods to sophisticated latent factor architectures capable of modeling complex user-item interactions \cite{koren2009matrix, pires2022interact2vec}.
 Early collaborative filtering (CF) relied on finding similar neighbors to generate recommendations, but these approaches struggled with the inherent sparsity and scalability challenges of modern industrial datasets \cite{koren2009matrix, pires2022interact2vec}.
@@ -171,7 +175,40 @@ In the music domain, for instance, items are organized into a four-level taxonom
 Models utilizing these hierarchies can infer preferences for new tracks based on a user's historical affinity for parent artists or genres, providing a robust solution to the ``cold-start'' problem \cite{koenigstein2011yahoo}.
 Recent developments have integrated these structural insights with deep learning architectures, such as self-attention mechanisms and recurrent units, to capture the sequential nature of user behavior \cite{koren2009collaborative, pires2022interact2vec}.
 
+\subsection{Scalable Implementations}
+
+Apache Spark MLlib provides a distributed implementation of ALS that scales to billions of ratings \cite{meng2016mllib, zaharia2016apache}.
+While effective for massive datasets, this approach requires substantial infrastructure and operational expertise.
+\cite{zhou2008large} proposed block-based updates for improved cache locality.
+Takács and Tikk \cite{takacs2012alternating} introduced alternating kernel-based matrix factorization with competitive performance on standard benchmarks.
+
+
+More recent work has explored neural collaborative filtering \cite{he2017neural}, graph neural networks for recommendations \cite{fan2019graph}, and transformer-based approaches \cite{sun2019bert4rec}.
+However, these methods typically require significantly more computational resources than traditional matrix factorization while providing marginal improvements for many practical applications \cite{rendle2019difficulty}.
+
+\subsection{Memory-Efficient Learning}
+
+Streaming algorithms for large-scale machine learning have been extensively studied \cite{dyer2013greedy, liberty2013simple}.
+% Feldman et al. [20] analyzed coresets for matrix factorization problems.
+Online matrix factorization approaches update models incrementally as new data arrives.
+Our work differs by focusing on efficient batch processing of static datasets through intelligent data loading strategies rather than algorithmic modifications.
+
+
+External memory algorithms and out-of-core computing provide general frameworks for data larger than RAM.
+Our chunked loading approach can be viewed as a specialized application of these principles to the ALS training pipeline.
+
 \section{Methodology}
+
+\subsection{Problem Formulation}
+
+The main aim in the alternating least square algorithm is to minimise the following log-likelihood objective function.
+
+\begin{equation}
+	\label{eqn:01}
+	\log p(R \mid U, V) = - \frac{\lambda}{2} \sum_{m = 1}^{M} \sum_{n \in \Omega(m)} (r_{mn} - u_m^T v_n)^2
+\end{equation}
+
+Some regularisation, like bias, latent vectors, etc, can be introduced to improve the algorithm. We'll see this in the result for different instances in our model.
 
 \subsection{Data Indexing and Representation}
 
@@ -219,6 +256,18 @@ In the above table there are 4 users and 3 movies. Represent table \ref{tab:01} 
 \end{table}
 
 From the above matrix it obvious that only 6 entries out of 12 is useful for analysis. In a very large dataset with say $n$ number of users and $m$ numbers of items, the dimension of the sparse matrix is $n \times m$, which will result in a space complexity of $nm$. But this can substantially reduced by storing only the non-zero values.
+
+
+
+\begin{figure}[H]
+	\centerline{\includegraphics[width=\linewidth]{pics/degree_distribution_loglog_simple.pdf}}
+	% \caption{}
+\end{figure}
+
+\begin{figure}[H]
+	\centerline{\includegraphics[width=\linewidth]{pics/ratings_distribution_simple.pdf}}
+	\caption{The ratings distribution of the MovieLens 32M dataset}
+\end{figure}
 
 \subsubsection{The Compressed Sparse Row (CSR)}
 
@@ -285,7 +334,7 @@ This is a sparse matrix represented by the following parameters:
 
 	\item The pointers to the row indices array of length nnz that contains row indices of the corresponding elements in the values array.
 
-    \item The pointers to the values array of length nnz that holds all nonzero values of the matrix in column-major ordering.
+	\item The pointers to the values array of length nnz that holds all nonzero values of the matrix in column-major ordering.
 \end{itemize}
 
 \begin{figure}[H]
@@ -300,157 +349,289 @@ In order to be efficient in the implementation of our, the different sparse matr
 Given the size of the dataset, chunking technique was employed to make the ingestion of data memory-efficient, and we used a two pass streaming approach to achieve this:
 
 \begin{enumerate}
-\item \textbf{First Pass}: iteratively processes the ratings file in chunk to collect the set of unique user and item identifiers and to count the total number of ratings. This enables mapping original IDs to contiguous integer indices without loading the entire dataset into memory.
+	\item \textbf{First Pass}: iteratively processes the ratings file in chunk to collect the set of unique user and item identifiers and to count the total number of ratings. This enables mapping original IDs to contiguous integer indices without loading the entire dataset into memory.
 
-\item \textbf{Second Pass}: reprocesses the ratings file in chunks to map original IDs to contiguous indices and performs a randomized train/test split. The split uses a per-chunk random sampling controlled by a \texttt{random\_seed} for reproducibility.
+	\item \textbf{Second Pass}: reprocesses the ratings file in chunks to map original IDs to contiguous indices and performs a randomized train/test split. The split uses a per-chunk random sampling controlled by a \texttt{random\_seed} for reproducibility.
 
-% \item \textbf{Output}: training data is returned as sparse matrices in both CSR and CSC formats; test data is retained as dense arrays of (user\_index, item\_index, rating). The function also returns mappings from internal item indices to movie titles.
+	      % \item \textbf{Output}: training data is returned as sparse matrices in both CSR and CSC formats; test data is retained as dense arrays of (user\_index, item\_index, rating). The function also returns mappings from internal item indices to movie titles.
 \end{enumerate}
 
-\begin{algorithm}[t]
-\caption{Two-Pass Chunked Sparse Matrix Construction}
-\label{alg:sparse_matrix_construction}
-\begin{algorithmic}[1]
-\REQUIRE Ratings file path $\mathcal{F}$, chunk size $c$
-\ENSURE Sparse matrices $\mathbf{M}_{\text{CSR}}$, $\mathbf{M}_{\text{CSC}}$, test arrays $\mathcal{T}$
-
-\STATE \textbf{Pass 1: Collect Unique Identifiers}
-\STATE Initialize: $\mathcal{U}_{\text{users}} \leftarrow \emptyset$, $\mathcal{U}_{\text{items}} \leftarrow \emptyset$
-\FOR{each chunk $\mathcal{C}$ of $c$ rows from $\mathcal{F}$}
-    \STATE Parse $\{\text{user\_id}_i\}$, $\{\text{item\_id}_i\}$ from $\mathcal{C}$
-    \STATE $\mathcal{U}_{\text{users}} \leftarrow \mathcal{U}_{\text{users}} \cup \{\text{user\_id}_i\}$
-    \STATE $\mathcal{U}_{\text{items}} \leftarrow \mathcal{U}_{\text{items}} \cup \{\text{item\_id}_i\}$
-    \STATE Discard $\mathcal{C}$
-\ENDFOR
-\STATE Create mappings: $\phi_u: \text{user\_id} \mapsto \text{idx}$, $\phi_v: \text{item\_id} \mapsto \text{idx}$
-
-\STATE
-\STATE \textbf{Pass 2: Load and Split}
-\STATE Initialize: $\mathcal{L}_{\text{train}} \leftarrow []$, $\mathcal{L}_{\text{test}} \leftarrow []$
-\FOR{each chunk $\mathcal{C}$ of $c$ rows from $\mathcal{F}$}
-    \STATE Parse $\{\text{user\_id}_i\}$, $\{\text{item\_id}_i\}$, $\{r_i\}$ from $\mathcal{C}$
-    \STATE Map IDs to indices using $\phi_u$, $\phi_v$
-    \STATE Randomly split into train/test with ratio $0.8/0.2$
-    \STATE Append train samples to $\mathcal{L}_{\text{train}}$
-    \STATE Append test samples to $\mathcal{L}_{\text{test}}$
-    \STATE Discard $\mathcal{C}$
-\ENDFOR
-
-\STATE Concatenate $\mathcal{L}_{\text{train}} \rightarrow \mathcal{A}_{\text{train}}$, $\mathcal{L}_{\text{test}} \rightarrow \mathcal{T}$
-\STATE Convert $\mathcal{A}_{\text{train}} \rightarrow \mathbf{M}_{\text{CSR}}$, $\mathbf{M}_{\text{CSC}}$
-\RETURN $\mathbf{M}_{\text{CSR}}$, $\mathbf{M}_{\text{CSC}}$, $\mathcal{T}$
-\end{algorithmic}
-\end{algorithm}
 
 In addition, even though Python is a garbage-collected language, we need to employed the \texttt{malloc - free} memory management model from the \texttt{C} programming language \cite{kernighan1988c}, this because we notice our program crashout after two chunking process.
 We delete any unused data object from the memory using the \texttt{del} keyword in Python.
+The two-pass is as shown in algorithm (\ref{alg:sparse_matrix_construction})
+
+\begin{algorithm}[t]
+	\caption{Two-Pass Chunked Sparse Matrix Construction}
+	\label{alg:sparse_matrix_construction}
+	\begin{algorithmic}[1]
+		\REQUIRE Ratings file path $\mathcal{F}$, chunk size $c$
+		\ENSURE Sparse matrices $\mathbf{M}_{\text{CSR}}$, $\mathbf{M}_{\text{CSC}}$, test arrays $\mathcal{T}$
+
+		\STATE \textbf{Pass 1: Collect Unique Identifiers}
+		\STATE Initialize: $\mathcal{U}_{\text{users}} \leftarrow \emptyset$, $\mathcal{U}_{\text{items}} \leftarrow \emptyset$
+		\FOR{each chunk $\mathcal{C}$ of $c$ rows from $\mathcal{F}$}
+		\STATE Parse $\{\text{user\_id}_i\}$, $\{\text{item\_id}_i\}$ from $\mathcal{C}$
+		\STATE $\mathcal{U}_{\text{users}} \leftarrow \mathcal{U}_{\text{users}} \cup \{\text{user\_id}_i\}$
+		\STATE $\mathcal{U}_{\text{items}} \leftarrow \mathcal{U}_{\text{items}} \cup \{\text{item\_id}_i\}$
+		\STATE Discard $\mathcal{C}$
+		\ENDFOR
+		\STATE Create mappings: $\phi_u: \text{user\_id} \mapsto \text{idx}$, $\phi_v: \text{item\_id} \mapsto \text{idx}$
+
+		\STATE
+		\STATE \textbf{Pass 2: Load and Split}
+		\STATE Initialize: $\mathcal{L}_{\text{train}} \leftarrow []$, $\mathcal{L}_{\text{test}} \leftarrow []$
+		\FOR{each chunk $\mathcal{C}$ of $c$ rows from $\mathcal{F}$}
+		\STATE Parse $\{\text{user\_id}_i\}$, $\{\text{item\_id}_i\}$, $\{r_i\}$ from $\mathcal{C}$
+		\STATE Map IDs to indices using $\phi_u$, $\phi_v$
+		\STATE Randomly split into train/test with ratio $0.8/0.2$
+		\STATE Append train samples to $\mathcal{L}_{\text{train}}$
+		\STATE Append test samples to $\mathcal{L}_{\text{test}}$
+		\STATE Discard $\mathcal{C}$
+		\ENDFOR
+
+		\STATE Concatenate $\mathcal{L}_{\text{train}} \rightarrow \mathcal{A}_{\text{train}}$, $\mathcal{L}_{\text{test}} \rightarrow \mathcal{T}$
+		\STATE Convert $\mathcal{A}_{\text{train}} \rightarrow \mathbf{M}_{\text{CSR}}$, $\mathbf{M}_{\text{CSC}}$
+		\RETURN $\mathbf{M}_{\text{CSR}}$, $\mathbf{M}_{\text{CSC}}$, $\mathcal{T}$
+	\end{algorithmic}
+\end{algorithm}
 
 
-\section{Model Formulation}
+\subsection{Optimisation Techniques}
+
+\begin{enumerate}
+\item \textbf{Float32 pecision}: We use float32 instead of float64 for all computations, reducing memory consumption by 50\% with negligible impact on convergence. For 200K users and 50K items with 50 factors.
+
+\begin{itemize}
+\item float64: $2 \times (200K \times 50 + 50K \times 50) \times 8 bytes = 100 MB$
+\item float32: $2 \times (200K \times 50 + 50K \times 50) \times 4 bytes = 50 MB$
+\end{itemize}
+\item  \textbf{Vectorized Predictions}: We replace explicit loops with NumPy broadcasting for prediction:
+
+\begin{verbatim}
+# Naive:
+for idx, (u, i)
+    in enumerate(zip(users, items)):
+    pred[idx] = μ + b_u[u]
+        + b_i[i] +
+        u_factors[u] @ i_factors[i]
+
+# Optimized: Single vectorized operation
+pred = \mu + b_u[users]
+        + b_i[items] +
+       sum(u_factors[users] * i_factors[items], axis=1)
+\end{verbatim}
+
+\item \textbf{Cached User Indices}: We pre-compute and cache the reconstruction of user indices from CSR \texttt{indptr}:
+\begin{verbatim}
+user_indices = repeat(arange(m), diff(indptr))
+\end{verbatim}
+This eliminates redundant computation in each iteration, saving O(m) operations per epoch.
+
+\item \textbf{Early Stopping:} We monitor RMSE convergence and terminate when improvement falls below threshold $\varepsilon$:
+\begin{verbatim}
+if |RMSE_{t} - RMSE_{t-1}| < epsilon: break
+\end{verbatim}
+\end{enumerate}
+
+
+
+
+\section{Result}
+
+Now we present different results from our different models.
+
+\subsection{Bias-Only ALS}
+The bias-only als as shown in the algorithm(\ref{alg:bias-only-als}). If we add the biases for both user and movie items in equation (\ref{eqn:01}), we have the following resulting equation:
+\begin{equation}
+\label{eqn:02}
+\mathcal{L}  =  - \frac{\lambda}{2} \sum_{mn} (r_{mn} - (b_{m}^{(u)} + b_{n}^{(i)}))^2  - \frac{\gamma}{2} b_{m}^{(u)2} + \ldots
+\end{equation}
+
+\begin{figure}[H]
+	\centerline{\includegraphics[width=\linewidth]{../notebooks/pics/als-bias-only-train-test.pdf}}
+	\caption{RMSE and Negative Log-Likelihood for the MovieLens 100K dataset with the Bias-Only ALS}
+\end{figure}
+
+\subsection{Bias-Latent ALS}
+In this case latent vectors $U, V$ are introduced for users and movies respectively, and the equation (\ref{eqn:01}) becomes
+\begin{align}
+\label{eqn:03}
+\mathcal{L} &  =  - \frac{\lambda}{2} \sum_{mn} (r_{mn} - (u^T_m v_n + b_{m}^{(u)} + b_{n}^{(i)}))^2 \nonumber \\
+& \qquad - \frac{\tau}{2}\sum_{m} u_m^T u_m - \frac{\tau}{2}\sum_{m} v_n^T v_n  + \ldots
+\end{align}
+
+Taking the derivative of $\mathcal{L}$ with respect to $u_m$, we get the representation for user update, and this is used in algorithm (\ref{alg:latent-factor-als})
+
+\[
+u_m = \bigg( \lambda \sum_n v_n v_n^T + \lambda \mathbb{I} \bigg)^{-1} \bigg( \lambda \sum_n v_n(r_{mn} - b_{m}^{(u)} - b_{n}^{(i)}) \bigg)
+\]
+
+In the same manner, the bias update for bot the user and movie are given as follows:
+
+\begin{align*}
+b_{m}^{(u)} & = \frac{\lambda\sum_n(r_{mn} - (u_m^Tv_n + b_n^{(i)}))}{\lambda|\Omega(m)| + \gamma} \\
+b_{n}^{(i)} & = \frac{\lambda\sum_m(r_{mn} - (u_m^Tv_n + b_m^{(u)}))}{\lambda|\Pi(m)| + \gamma}
+\end{align*}
+
+\begin{figure}[H]
+	\centerline{\includegraphics[width=\linewidth]{../notebooks/pics/als-bias-latent-train-test-32m.pdf}}
+	\caption{RMSE and Negative Log-Likelihood for the MovieLens 32M dataset with the Bias-Latent ALS}
+\end{figure}
+
+\begin{figure}[H]
+\label{enbed-plot}
+\centerline{\includegraphics[width=\linewidth]{../notebooks/pics/embedding-plot.pdf}}
+	\caption{2D Embedding Plot for 100 Movies}
+\end{figure}
+From the plot in figure (\ref{enbed-plot}) we can noticed that movies of like genres are clusteredtogether. For example the movie, \emph{Fond Kiss}, which is a romantic movie is closely surrounded by \emph{Princess Diaries, High Security Vacation}, which are also romantic movies.
 
 
 \begin{algorithm}[t]
-\caption{Bias-Only Alternating Least Squares}
-\label{alg:bias-only-als}
-\begin{algorithmic}[1]
-\REQUIRE Rating matrix $R \in \mathbb{R}^{m \times n}$ with observed entries $\Omega$, regularization $\lambda$, iterations $T$
-\ENSURE User biases $\{b_u\}_{u=1}^m$, item biases $\{b_i\}_{i=1}^n$
+	\caption{Bias-Only Alternating Least Squares}
+	\label{alg:bias-only-als}
+	\begin{algorithmic}[1]
+		\REQUIRE Rating matrix $R \in \mathbb{R}^{m \times n}$ with observed entries $\Omega$, regularization $\lambda$, iterations $T$
+		\ENSURE User biases $\{b_u\}_{u=1}^m$, item biases $\{b_i\}_{i=1}^n$
 
-\STATE \textbf{Initialize:}
-\STATE $\mu \leftarrow \frac{1}{|\Omega|} \sum_{(u,i) \in \Omega} r_{ui}$
-\STATE $b_u \leftarrow 0$ for all $u \in [m]$
-\STATE $b_i \leftarrow 0$ for all $i \in [n]$
+		\STATE \textbf{Initialize:}
+		\STATE $\mu \leftarrow \frac{1}{|\Omega|} \sum_{(u,i) \in \Omega} r_{ui}$
+		\STATE $b_u \leftarrow 0$ for all $u \in [m]$
+		\STATE $b_i \leftarrow 0$ for all $i \in [n]$
 
-\FOR{$t = 1$ to $T$}
-    \STATE \textit{// Update user biases (fix item biases)}
-    \FOR{$u = 1$ to $m$}
-        \IF{$|\mathcal{I}_u| > 0$}
-            \STATE $b_u \leftarrow \frac{\sum_{i \in \mathcal{I}_u} (r_{ui} - \mu - b_i)}{|\mathcal{I}_u| + \lambda}$
-        \ENDIF
-    \ENDFOR
+		\FOR{$t = 1$ to $T$}
+		\STATE \textit{// Update user biases (fix item biases)}
+		\FOR{$u = 1$ to $m$}
+		\IF{$|\mathcal{I}_u| > 0$}
+		\STATE $b_u \leftarrow \frac{\sum_{i \in \mathcal{I}_u} (r_{ui} - \mu - b_i)}{|\mathcal{I}_u| + \lambda}$
+		\ENDIF
+		\ENDFOR
 
-    \STATE \textit{// Update item biases (fix user biases)}
-    \FOR{$i = 1$ to $n$}
-        \IF{$|\mathcal{U}_i| > 0$}
-            \STATE $b_i \leftarrow \frac{\sum_{u \in \mathcal{U}_i} (r_{ui} - \mu - b_u)}{|\mathcal{U}_i| + \lambda}$
-        \ENDIF
-    \ENDFOR
-\ENDFOR
+		\STATE \textit{// Update item biases (fix user biases)}
+		\FOR{$i = 1$ to $n$}
+		\IF{$|\mathcal{U}_i| > 0$}
+		\STATE $b_i \leftarrow \frac{\sum_{u \in \mathcal{U}_i} (r_{ui} - \mu - b_u)}{|\mathcal{U}_i| + \lambda}$
+		\ENDIF
+		\ENDFOR
+		\ENDFOR
 
-\RETURN $\{b_u\}_{u=1}^m$, $\{b_i\}_{i=1}^n$
-\end{algorithmic}
+		\RETURN $\{b_u\}_{u=1}^m$, $\{b_i\}_{i=1}^n$
+	\end{algorithmic}
 \end{algorithm}
 
 \begin{algorithm}[t]
-\caption{Latent Factor ALS with Biases}
-\label{alg:latent-factor-als}
-\begin{algorithmic}[1]
-\REQUIRE Rating matrix $R$, latent factors $k$, regularization $\lambda$, iterations $T$
-\ENSURE User biases $\{b_u\}$, item biases $\{b_i\}$, user factors $P \in \mathbb{R}^{m \times k}$, item factors $Q \in \mathbb{R}^{n \times k}$
+	\caption{Latent Factor ALS with Biases}
+	\label{alg:latent-factor-als}
+	\begin{algorithmic}[1]
+		\REQUIRE Rating matrix $R$, latent factors $k$, regularization $\lambda$, iterations $T$
+		\ENSURE User biases $\{b_u\}$, item biases $\{b_i\}$, user factors $P \in \mathbb{R}^{m \times k}$, item factors $Q \in \mathbb{R}^{n \times k}$
 
-\STATE \textbf{Initialize:}
-\STATE $\mu \leftarrow \frac{1}{|\Omega|} \sum_{(u,i) \in \Omega} r_{ui}$
-\STATE $b_u \leftarrow 0$ for all $u \in [m]$; \quad $b_i \leftarrow 0$ for all $i \in [n]$
-\STATE $P \sim \mathcal{N}(0, 0.1^2 I_{m \times k})$; \quad $Q \sim \mathcal{N}(0, 0.1^2 I_{n \times k})$
+		\STATE \textbf{Initialize:}
+		\STATE $\mu \leftarrow \frac{1}{|\Omega|} \sum_{(u,i) \in \Omega} r_{ui}$
+		\STATE $b_u \leftarrow 0$ for all $u \in [m]$; \quad $b_i \leftarrow 0$ for all $i \in [n]$
+		\STATE $P \sim \mathcal{N}(0, 0.1^2 I_{m \times k})$; \quad $Q \sim \mathcal{N}(0, 0.1^2 I_{n \times k})$
 
-\FOR{$t = 1$ to $T$}
-    \STATE \textit{// Update user parameters (fix $Q$ and $\{b_i\}$)}
-    \FOR{$u = 1$ to $m$}
-        \IF{$|\mathcal{I}_u| > 0$}
-            \STATE $Q_u \leftarrow [\mathbf{q}_i]_{i \in \mathcal{I}_u} \in \mathbb{R}^{|\mathcal{I}_u| \times k}$ \COMMENT{Stack item factors}
-            \STATE $\tilde{Q}_u \leftarrow [\mathbf{1}_{|\mathcal{I}_u|}, Q_u] \in \mathbb{R}^{|\mathcal{I}_u| \times (k+1)}$ \COMMENT{Augment with bias column}
-            \STATE $\mathbf{y}_u \leftarrow [r_{ui} - \mu - b_i]_{i \in \mathcal{I}_u} \in \mathbb{R}^{|\mathcal{I}_u|}$ \COMMENT{Residuals}
-            \STATE $A \leftarrow \tilde{Q}_u^\top \tilde{Q}_u + \lambda I_{k+1}$
-            \STATE $\mathbf{b} \leftarrow \tilde{Q}_u^\top \mathbf{y}_u$
-            \STATE $\mathbf{x}_u \leftarrow A^{-1} \mathbf{b}$ \COMMENT{Solve ridge regression}
-            \STATE $b_u \leftarrow x_{u,0}$; \quad $\mathbf{p}_u \leftarrow [x_{u,1}, \ldots, x_{u,k}]^\top$
-        \ENDIF
-    \ENDFOR
+		\FOR{$t = 1$ to $T$}
+		\STATE \textit{// Update user parameters (fix $Q$ and $\{b_i\}$)}
+		\FOR{$u = 1$ to $m$}
+		\IF{$|\mathcal{I}_u| > 0$}
+		\STATE $Q_u \leftarrow [\mathbf{q}_i]_{i \in \mathcal{I}_u} \in \mathbb{R}^{|\mathcal{I}_u| \times k}$ \COMMENT{Stack item factors}
+		\STATE $\tilde{Q}_u \leftarrow [\mathbf{1}_{|\mathcal{I}_u|}, Q_u] \in \mathbb{R}^{|\mathcal{I}_u| \times (k+1)}$ \COMMENT{Augment with bias column}
+		\STATE $\mathbf{y}_u \leftarrow [r_{ui} - \mu - b_i]_{i \in \mathcal{I}_u} \in \mathbb{R}^{|\mathcal{I}_u|}$ \COMMENT{Residuals}
+		\STATE $A \leftarrow \tilde{Q}_u^\top \tilde{Q}_u + \lambda I_{k+1}$
+		\STATE $\mathbf{b} \leftarrow \tilde{Q}_u^\top \mathbf{y}_u$
+		\STATE $\mathbf{x}_u \leftarrow A^{-1} \mathbf{b}$ \COMMENT{Solve ridge regression}
+		\STATE $b_u \leftarrow x_{u,0}$; \quad $\mathbf{p}_u \leftarrow [x_{u,1}, \ldots, x_{u,k}]^\top$
+		\ENDIF
+		\ENDFOR
 
-    \STATE \textit{// Update item parameters (fix $P$ and $\{b_u\}$)}
-    \FOR{$i = 1$ to $n$}
-        \IF{$|\mathcal{U}_i| > 0$}
-            \STATE $P_i \leftarrow [\mathbf{p}_u]_{u \in \mathcal{U}_i} \in \mathbb{R}^{|\mathcal{U}_i| \times k}$
-            \STATE $\tilde{P}_i \leftarrow [\mathbf{1}_{|\mathcal{U}_i|}, P_i] \in \mathbb{R}^{|\mathcal{U}_i| \times (k+1)}$
-            \STATE $\mathbf{y}_i \leftarrow [r_{ui} - \mu - b_u]_{u \in \mathcal{U}_i} \in \mathbb{R}^{|\mathcal{U}_i|}$
-            \STATE $A \leftarrow \tilde{P}_i^\top \tilde{P}_i + \lambda I_{k+1}$
-            \STATE $\mathbf{b} \leftarrow \tilde{P}_i^\top \mathbf{y}_i$
-            \STATE $\mathbf{x}_i \leftarrow A^{-1} \mathbf{b}$
-            \STATE $b_i \leftarrow x_{i,0}$; \quad $\mathbf{q}_i \leftarrow [x_{i,1}, \ldots, x_{i,k}]^\top$
-        \ENDIF
-    \ENDFOR
-\ENDFOR
+		\STATE \textit{// Update item parameters (fix $P$ and $\{b_u\}$)}
+		\FOR{$i = 1$ to $n$}
+		\IF{$|\mathcal{U}_i| > 0$}
+		\STATE $P_i \leftarrow [\mathbf{p}_u]_{u \in \mathcal{U}_i} \in \mathbb{R}^{|\mathcal{U}_i| \times k}$
+		\STATE $\tilde{P}_i \leftarrow [\mathbf{1}_{|\mathcal{U}_i|}, P_i] \in \mathbb{R}^{|\mathcal{U}_i| \times (k+1)}$
+		\STATE $\mathbf{y}_i \leftarrow [r_{ui} - \mu - b_u]_{u \in \mathcal{U}_i} \in \mathbb{R}^{|\mathcal{U}_i|}$
+		\STATE $A \leftarrow \tilde{P}_i^\top \tilde{P}_i + \lambda I_{k+1}$
+		\STATE $\mathbf{b} \leftarrow \tilde{P}_i^\top \mathbf{y}_i$
+		\STATE $\mathbf{x}_i \leftarrow A^{-1} \mathbf{b}$
+		\STATE $b_i \leftarrow x_{i,0}$; \quad $\mathbf{q}_i \leftarrow [x_{i,1}, \ldots, x_{i,k}]^\top$
+		\ENDIF
+		\ENDFOR
+		\ENDFOR
 
-\RETURN $\{b_u\}_{u=1}^m$, $\{b_i\}_{i=1}^n$, $P$, $Q$
-\end{algorithmic}
+		\RETURN $\{b_u\}_{u=1}^m$, $\{b_i\}_{i=1}^n$, $P$, $Q$
+	\end{algorithmic}
 \end{algorithm}
+
+\subsection{Addressing the Cold Start Problem}
+We treats cold-start user modeling as a local ALS update problem, solving a small, regularized least-squares system using pre-learned item embeddings. This allows immediate, personalized recommendations with minimal data and negligible computational overhead.
+
 
 \begin{algorithm}[t]
-\caption{Cold Start Recommendation for New User}
-\label{alg:cold-start}
-\begin{algorithmic}[1]
-\REQUIRE New user ratings $\mathcal{R} = \{(i_j, r_j)\}_{j=1}^{|\mathcal{R}|}$, model parameters $(\mu, Q, \{b_i\}, \lambda)$, top-$K$
-\ENSURE Top-$K$ item recommendations
+	\caption{Cold Start Recommendation for New User}
+	\label{alg:cold-start}
+	\begin{algorithmic}[1]
+		\REQUIRE New user ratings $\mathcal{R} = \{(i_j, r_j)\}_{j=1}^{|\mathcal{R}|}$, model parameters $(\mu, Q, \{b_i\}, \lambda)$, top-$K$
+		\ENSURE Top-$K$ item recommendations
 
-\STATE $\mathcal{I} \leftarrow \{i_j : (i_j, r_j) \in \mathcal{R}\}$ \COMMENT{Extract rated item indices}
-\STATE $Q_{\text{new}} \leftarrow [\mathbf{q}_{i_j}]_{i_j \in \mathcal{I}} \in \mathbb{R}^{|\mathcal{R}| \times k}$
-\STATE $\tilde{Q}_{\text{new}} \leftarrow [\mathbf{1}_{|\mathcal{R}|}, Q_{\text{new}}]$
-\STATE $\mathbf{y}_{\text{new}} \leftarrow [r_j - \mu - b_{i_j}]_{j=1}^{|\mathcal{R}|}$
+		\STATE $\mathcal{I} \leftarrow \{i_j : (i_j, r_j) \in \mathcal{R}\}$ \COMMENT{Extract rated item indices}
+		\STATE $Q_{\text{new}} \leftarrow [\mathbf{q}_{i_j}]_{i_j \in \mathcal{I}} \in \mathbb{R}^{|\mathcal{R}| \times k}$
+		\STATE $\tilde{Q}_{\text{new}} \leftarrow [\mathbf{1}_{|\mathcal{R}|}, Q_{\text{new}}]$
+		\STATE $\mathbf{y}_{\text{new}} \leftarrow [r_j - \mu - b_{i_j}]_{j=1}^{|\mathcal{R}|}$
 
-\STATE \textit{// Compute user parameters via ridge regression}
-\STATE $A \leftarrow \tilde{Q}_{\text{new}}^\top \tilde{Q}_{\text{new}} + \lambda I_{k+1}$
-\STATE $\mathbf{b} \leftarrow \tilde{Q}_{\text{new}}^\top \mathbf{y}_{\text{new}}$
-\STATE $\mathbf{x}_{\text{new}} \leftarrow A^{-1} \mathbf{b}$
-\STATE $b_{\text{new}} \leftarrow x_0$; \quad $\mathbf{p}_{\text{new}} \leftarrow [x_1, \ldots, x_k]^\top$
+		\STATE \textit{// Compute user parameters via ridge regression}
+		\STATE $A \leftarrow \tilde{Q}_{\text{new}}^\top \tilde{Q}_{\text{new}} + \lambda I_{k+1}$
+		\STATE $\mathbf{b} \leftarrow \tilde{Q}_{\text{new}}^\top \mathbf{y}_{\text{new}}$
+		\STATE $\mathbf{x}_{\text{new}} \leftarrow A^{-1} \mathbf{b}$
+		\STATE $b_{\text{new}} \leftarrow x_0$; \quad $\mathbf{p}_{\text{new}} \leftarrow [x_1, \ldots, x_k]^\top$
 
-\STATE \textit{// Predict ratings for all items}
-\STATE $\mathbf{s} \leftarrow \mu \mathbf{1}_n + b_{\text{new}} \mathbf{1}_n + [b_i]_{i=1}^n + Q \mathbf{p}_{\text{new}}$ \COMMENT{$\mathbf{s} \in \mathbb{R}^n$}
-\STATE $\mathbf{s}[\mathcal{I}] \leftarrow -\infty$ \COMMENT{Exclude already rated items}
+		\STATE \textit{// Predict ratings for all items}
+		\STATE $\mathbf{s} \leftarrow \mu \mathbf{1}_n + b_{\text{new}} \mathbf{1}_n + [b_i]_{i=1}^n + Q \mathbf{p}_{\text{new}}$ \COMMENT{$\mathbf{s} \in \mathbb{R}^n$}
+		\STATE $\mathbf{s}[\mathcal{I}] \leftarrow -\infty$ \COMMENT{Exclude already rated items}
 
-\STATE $\mathcal{T} \leftarrow \text{argsort}(\mathbf{s}, \text{descending})$ \COMMENT{Sort by predicted rating}
-\RETURN $\mathcal{T}[1:K]$, $\mathbf{s}[\mathcal{T}[1:K]]$
-\end{algorithmic}
+		\STATE $\mathcal{T} \leftarrow \text{argsort}(\mathbf{s}, \text{descending})$ \COMMENT{Sort by predicted rating}
+		\RETURN $\mathcal{T}[1:K]$, $\mathbf{s}[\mathcal{T}[1:K]]$
+	\end{algorithmic}
 \end{algorithm}
+
+\subsection{Testing Model}
+
+We test our final model with a dummy user, by liking the movies \emph{Lord of the rings} and \emph{Star wars}. And we have the following top 10 recomendations
+
+\begin{table*}[t]
+\centering
+\begin{tabular}{cc}
+\toprule
+Lord of the rings & Star wars \\
+\midrule
+Christmas Carol: The Movie & Mathu Vadalara
+A Creepshow Animated Special & Sioux Ghost Dance
+I Start Counting & Christmas Carol: The Movie
+Prince and the Showgirl & The Wyvern Mystery
+The Wyvern Mystery & Marvel Studios: Expanding the Universe
+The Seven Days & 36 China Town
+Dave Attell: Captain Miserable & Room in Rome (Habitación en Roma)
+Murattu Kalai & Boniface's Holiday
+Internet Famous & Bone Tomahawk
+Mischief & Sex
+\\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+
+\section{Conclusion}
+
+In this work, we presented an efficient and memory-safe implementation of the Alternating Least Squares (ALS) algorithm for large-scale collaborative filtering. By combining sparse matrix representations (CSR and CSC), a two-pass chunked data ingestion strategy, and careful low-level memory management, our approach enables training on datasets that exceed main memory capacity without resorting to distributed computing frameworks. Experimental results on the MovieLens 100K and 32M datasets demonstrate that the proposed implementation achieves competitive predictive performance, stable convergence, and substantial reductions in memory footprint through the use of float32 precision and vectorized computations.
+
+Beyond scalability, we showed that the learned latent representations exhibit meaningful semantic structure, as evidenced by genre-level clustering in the embedding space. We also addressed the user cold-start problem by formulating new-user personalization as a lightweight, regularized least-squares update that leverages pre-trained item factors, allowing immediate and personalized recommendations with negligible computational overhead.
+
+Overall, this work highlights that careful systems-level design choices can significantly extend the practical applicability of classical matrix factorization methods. Future work includes extending the framework to implicit feedback settings, incorporating temporal dynamics, and exploring hybrid models that integrate side information while preserving the memory efficiency and simplicity of the proposed approach.
+
+\textbf{Note}: All the equations presented in this work are from \cite{ulrich2025}.
+
+All the experiment were carried on a machine with Intel corei3 11th gen processor and 16GB RAM.
+
 
 
 
@@ -909,7 +1090,7 @@ We delete any unused data object from the memory using the \texttt{del} keyword 
 % earliest first. Make sure that each reference includes all relevant
 % information (e.g., page numbers).
 
-% Please put some effort into making references complete, presentable, and
+% Please put some effort into making references complete, presenMathu Vadalaratable, and
 % consistent, e.g. use the actual current name of authors.
 % If using bibtex, please protect capital letters of names and
 % abbreviations in titles, for example, use \{B\}ayesian or \{L\}ipschitz
@@ -958,14 +1139,14 @@ We delete any unused data object from the memory using the \texttt{del} keyword 
 % APPENDIX
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-\newpage
-\appendix
-\onecolumn
-\section{You \emph{can} have an appendix here.}
+% \newpage
+% \appendix
+% \onecolumn
+% \section{You \emph{can} have an appendix here.}
 
-You can have as much text here as you want. The main body must be at most $8$ pages long.
-For the final version, one more page can be added.
-If you want, you can use an appendix like this one, even using the one-column format.
+% You can have as much text here as you want. The main body must be at most $8$ pages long.
+% For the final version, one more page can be added.
+% If you want, you can use an appendix like this one, even using the one-column format.
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 

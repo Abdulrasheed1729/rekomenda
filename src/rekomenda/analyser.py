@@ -178,6 +178,7 @@ class ALSRecommendationAnalyzer:
 
     def plot_embedding_scatter(
         self,
+        output: str,
         n_items: int = 0,
         highlight_items: List[int] = list(),
         filter_by_title: str | None = None,
@@ -288,8 +289,8 @@ class ALSRecommendationAnalyzer:
                     zorder=4,
                 )
 
-        ax.set_xlabel("PC1", fontsize=12)
-        ax.set_ylabel("PC2", fontsize=12)
+        # ax.set_xlabel("PC1", fontsize=12)
+        # ax.set_ylabel("PC2", fontsize=12)
         ax.set_title(title, fontsize=14, fontweight="bold")
         ax.grid(True, alpha=0.2)
 
@@ -297,6 +298,7 @@ class ALSRecommendationAnalyzer:
             ax.legend(fontsize=10)
 
         plt.tight_layout()
+        plt.savefig(output, format="pdf")
         plt.show()
 
         return coords_2d, valid_items
